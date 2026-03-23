@@ -1,0 +1,22 @@
+# Compiled executables
+echoserver
+smtp
+pop3
+
+# Object files
+*.o
+*.out
+
+# Test/temp files
+*.mbox
+mailtest/
+maildir/
+
+# macOS junk
+.DS_Store
+
+# Submission zip
+*.zip
+
+# Any generated output
+*.log
