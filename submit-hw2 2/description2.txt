@@ -1,0 +1,157 @@
+CIS 5050 – HW2
+Name: Anshu Gupta
+SEAS login: anshuykg
+
+============================================================
+Overview
+============================================================
+This submission implements:
+1) SMTP server (Milestone 2) that receives mail and appends messages to local mbox files.
+2) POP3 server (Milestone 3) that allows a client (e.g., Thunderbird) to list, retrieve, delete, and UIDL messages from those mbox files.
+
+Both servers are concurrent (thread-per-connection) and use correct mailbox locking
+(thread-level + process-level) to avoid corruption when multiple clients or both protocols
+access the same mailbox.
+
+============================================================
+SMTP Server (Milestone 2)
+============================================================
+Command line / options:
+- Default port: 2500
+- Usage: ./smtp [-p port] [-v] [-a] <maildir>
+- -p <port> : choose listening port
+- -v        : verbose debug printing to stderr
+- -a        : prints "Full name: Anshu Gupta" and "SEAS login: anshuykg" to stderr and exits
+- <maildir> : directory containing <user>.mbox files
+
+Connection model:
+- Accepts multiple simultaneous connections.
+- Each new connection is handled by a detached pthread (thread-per-connection).
+
+Verbose output (when -v is enabled):
+- Prints connection, client commands, and server responses in the format:
+  [fd] New connection
+  [fd] C: <client line>
+  [fd] S: <server response>
+
+SMTP protocol behavior:
+- On connect: sends greeting:
+  "220 localhost Service ready\r\n"
+- Commands are case-insensitive.
+- EHLO is rejected with:
+  "500 Syntax error, command unrecognized"
+- HELO <arg> is required before MAIL/RCPT/DATA.
+  - If HELO is missing: "503 Bad sequence of commands"
+- Supported commands:
+  HELO, MAIL FROM, RCPT TO, DATA, RSET, NOOP, QUIT
+- MAIL FROM syntax:
+  MAIL FROM:<address>
+  - Extracts address inside angle brackets.
+- RCPT TO syntax:
+  RCPT TO:<user@localhost>
+  - Only accepts recipients of the form user@localhost
+  - Rejects invalid users with: "550 no such user here"
+  - Also requires that <maildir>/<user>.mbox already exists and is a regular file.
+  - Deduplicates recipients (same user only delivered once).
+- DATA:
+  - Only allowed after MAIL FROM and at least one RCPT TO.
+  - Server responds: "354 End data with <CRLF>.<CRLF>"
+  - Accepts message content until a line containing only ".".
+  - Dot-unstuffing: if a data line begins with '.', one dot is removed.
+  - Message is appended to each recipient’s mailbox.
+
+Mailbox format for SMTP delivery:
+- Each delivered message is appended to <maildir>/<user>.mbox with:
+  1) A separator line:
+     "From <mail_from> <ctime>\n"
+  2) The message DATA content
+  3) A blank line after the message
+
+Concurrency + locking (SMTP):
+- To prevent corruption, each mailbox append uses TWO layers of locking:
+  1) Per-mailbox pthread mutex (prevents multiple SMTP threads writing same mailbox at once)
+  2) flock(LOCK_EX) on the opened mbox file (prevents SMTP process vs POP3 process conflicts)
+- Unlock order:
+  flock unlock -> close(fd) -> pthread_mutex_unlock
+
+Shutdown behavior (SIGINT):
+- On SIGINT, server stops accepting new connections and shuts down cleanly.
+- Existing connections receive:
+  "421 Server shutting down\r\n"
+  then sockets are shutdown/closed.
+
+============================================================
+POP3 Server (Milestone 3)
+============================================================
+Command line / options:
+- Default port: 11000
+- Usage: ./pop3 [-p port] [-v] [-a] <maildir>
+- -p <port> : choose listening port
+- -v        : verbose debug printing to stderr
+- -a        : prints "Full name: Anshu Gupta" and "SEAS login: anshuykg" to stderr and exits
+- <maildir> : directory containing <user>.mbox files
+
+Connection model:
+- Accepts multiple simultaneous connections.
+- Each connection is handled by a detached pthread (thread-per-connection).
+
+POP3 greeting:
+- On connect, sends:
+  "+OK POP3 ready [localhost]\r\n"
+
+Authentication:
+- USER <name>
+  - Validates username to prevent path traversal (rejects '/', '\', '..').
+  - Sets mailbox path to <maildir>/<user>.mbox
+- PASS <password>
+  - Requires USER first.
+  - Password must be exactly: cis505
+  - Requires mailbox file to exist and be a regular file.
+  - On PASS success:
+    - Acquires per-mailbox pthread mutex
+    - Opens mailbox and obtains flock(LOCK_EX)
+    - Loads messages from the mailbox into memory
+
+Mailbox locking during POP3 session:
+- Once PASS succeeds, the mailbox remains locked for the rest of the session
+  (thread mutex + flock held).
+- This prevents interference with other POP3 sessions and with SMTP delivery.
+
+Supported POP3 commands (after auth):
+- STAT:
+  returns count and total octets for undeleted messages
+- LIST [n]:
+  lists message sizes (octets) or a single message size
+- UIDL [n]:
+  provides stable unique IDs using MD5(from_line + message_text)
+- RETR n:
+  returns full message content and terminates with ".\r\n"
+  - Converts message to CRLF on the wire
+  - Dot-stuffs any line that begins with '.'
+- DELE n:
+  marks a message as deleted (not removed until QUIT)
+- RSET:
+  undeletes any messages marked deleted
+- NOOP:
+  responds with +OK
+- QUIT:
+  works at any time
+  - If authenticated, commits deletions by rewriting the mailbox to a temp file
+    and renaming it over the original, keeping only undeleted messages.
+  - Releases locks and closes the mailbox.
+
+POP3 multi-line responses:
+- LIST (no arg) and UIDL (no arg) are multi-line outputs terminated by a single "." line.
+
+Shutdown behavior (SIGINT):
+- On SIGINT, server stops accepting new connections.
+- Existing connections receive:
+  "-ERR Server shutting down\r\n"
+  then sockets are shutdown/closed.
+
+============================================================
+Notes
+============================================================
+- Both servers use per-connection buffering so TCP partial reads are handled correctly.
+- Both servers are robust to multiple clients and concurrent SMTP/POP3 access by using
+  mutex + flock for mailbox safety.

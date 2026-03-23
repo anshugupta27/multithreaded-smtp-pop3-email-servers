@@ -1,0 +1,60 @@
+CIS 5050 – HW2 – Milestone 1 (Multithreaded Echo Server)
+Author: Anshu Gupta / anshuykg
+
+What I implemented
+1) Command-line options
+- -p <port>: listen on the given TCP port (default is 10000 if -p is not provided).
+- -a: print my full name + SEAS login to stderr and exit.
+- -v: enable verbose/debug logging to stderr in the required format.
+
+2) Server socket setup
+- Create an IPv4 TCP listening socket (AF_INET, SOCK_STREAM).
+- Enable SO_REUSEADDR so the server can restart quickly even if the old port is in TIME_WAIT.
+- bind() to INADDR_ANY on the chosen port, then listen() and accept() connections.
+
+3) Multithreading / concurrency
+- For every accepted connection, the main thread spawns a new pthread to handle that client.
+- Threads are detached so they clean up automatically when finished.
+- Supports multiple concurrent connections (assume up to 100 concurrent active clients).
+
+4) Protocol behavior (echo server)
+- When a client connects, the server immediately sends:
+  +OK Server ready (Author: Anshu Gupta / anshuykg)\r\n
+- Commands are case-insensitive.
+- Supported commands:
+  - ECHO <text>  -> reply: +OK <text>\r\n
+  - QUIT         -> reply: +OK Goodbye!\r\n and then close the connection
+- Unknown command -> reply: -ERR Unknown command\r\n
+
+5) Correct handling of partial reads / buffering
+- TCP data may arrive in pieces (e.g., "ECH" then "O blah\r\n"), or multiple commands may arrive at once.
+- Each client thread maintains a per-connection input buffer:
+  - append newly received bytes into the buffer
+  - while the buffer contains a full line ending in CRLF, extract one complete command line,
+    process it, remove it from the buffer, and continue
+- Enforces a safe maximum command length (at least 1000 characters) to avoid runaway input.
+
+6) Robustness / cleanup
+- SIGPIPE is ignored so the process is not killed if a client disconnects and the server tries to send().
+- If a client disconnects abruptly, only that connection is closed; the server keeps running.
+
+7) Ctrl+C shutdown behavior
+- A SIGINT handler is installed (Ctrl+C).
+- On Ctrl+C, the server:
+  - stops accepting new connections
+  - sends: -ERR Server shutting down\r\n to every currently open connection
+  - closes all open client sockets and the listening socket
+  - exits cleanly
+
+8) Verbose logging (-v)
+When -v is enabled, stderr includes (at minimum):
+- [N] New connection
+- [N] C: <text>      (full command line received, without the trailing CRLF)
+- [N] S: <text>      (response sent, without the trailing CRLF)
+- [N] Connection closed
+
+How to test
+- Run the server: ./echoserver -p 10000 -v
+- Connect with telnet: telnet localhost 10000
+- Try commands: ECHO hello, BLAH, QUIT
+- Run the provided HW2 tester program to validate partial-write behavior and responses.
